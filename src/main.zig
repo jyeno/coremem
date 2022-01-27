@@ -38,8 +38,8 @@ const Config = struct {
     pid_list: ?[]const u8 = null,
     // print the processes in decrescent order, by total RAM usage
     reverse: bool = false,
-    // means that there is no limit
-    limit: u8 = 0,
+    // 0 means that there is no limit
+    limit: u32 = 0,
     split_args: bool = false,
     // shows only the total amount of memory used
     only_total: bool = false,
@@ -80,7 +80,8 @@ pub fn main() anyerror!u8 {
             var buffer: [9]u8 = undefined;
             try bufOut.writer().print("{s}\n", .{toHuman(&buffer, total_ram)});
         } else {
-            for (processes) |proc| {
+            var i: usize = if (config.limit != 0 and config.limit < processes.len) processes.len - config.limit else 0;
+            for (processes[i..]) |proc| {
                 defer allocator.free(proc.name); // deinitializing as we dont need anymore
 
                 try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
@@ -115,7 +116,7 @@ fn usageExit(exit_value: u8) void {
         \\-d, --discriminate-by-pid        Show by process rather than by program (WIP)
         \\-S, --swap                       Show swap information
         \\-w, --watch <N>                  Measure and show process memory every N seconds
-        \\-l, --limit <N>                  Show only the last N processes (WIP)
+        \\-l, --limit <N>                  Show only the last N processes
         \\-r, --reverse                    Reverses the order that processes are shown (WIP)
     ;
     std.io.getStdOut().writer().print("{s}\n", .{usage_str}) catch {}; // does nothing in case of error
@@ -179,7 +180,7 @@ fn getConfig() !Config {
                 },
                 'p' => config.pid_list = opt_arg.?,
                 'w' => config.watch = try std.fmt.parseInt(u32, opt_arg.?, 10),
-                'l' => config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10),
+                'l' => config.limit = try std.fmt.parseInt(u32, opt_arg.?, 10),
                 else => unreachable,
             }
         }
