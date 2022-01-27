@@ -80,6 +80,8 @@ pub fn main() anyerror!u8 {
             var buffer: [9]u8 = undefined;
             try bufOut.writer().print("{s}\n", .{toHuman(&buffer, total_ram)});
         } else {
+            if (config.reverse) std.mem.reverse(Process, processes);
+
             var i: usize = if (config.limit != 0 and config.limit < processes.len) processes.len - config.limit else 0;
             for (processes[i..]) |proc| {
                 defer allocator.free(proc.name); // deinitializing as we dont need anymore
@@ -117,7 +119,7 @@ fn usageExit(exit_value: u8) void {
         \\-S, --swap                       Show swap information
         \\-w, --watch <N>                  Measure and show process memory every N seconds
         \\-l, --limit <N>                  Show only the last N processes
-        \\-r, --reverse                    Reverses the order that processes are shown (WIP)
+        \\-r, --reverse                    Reverses the order that processes are shown
     ;
     std.io.getStdOut().writer().print("{s}\n", .{usage_str}) catch {}; // does nothing in case of error
     std.os.exit(exit_value);
