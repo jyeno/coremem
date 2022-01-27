@@ -279,7 +279,7 @@ test "toHuman" {
     try std.testing.expect(std.mem.eql(u8, toHuman(&buffer, 128), "128.0 KiB"));
     try std.testing.expect(std.mem.eql(u8, toHuman(&buffer, 1024), "1.0 MiB"));
     try std.testing.expect(std.mem.eql(u8, toHuman(&buffer, 2184), "2.1 MiB"));
-    try std.testing.expect(std.mem.eql(u8, toHuman(&buffer, 2184), "2.1 MiB"));
+    try std.testing.expect(std.mem.eql(u8, toHuman(&buffer, 200184), "195.5 MiB"));
 }
 
 /// Creates and return a `Process`, its memory usage data is populated
