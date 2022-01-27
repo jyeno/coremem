@@ -62,7 +62,7 @@ pub fn main() anyerror!u8 {
     var allocator = stack_alloc.get();
 
     var bufOut = std.io.bufferedWriter(std.io.getStdOut().writer());
-    try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
+    if (!config.only_total) try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
 
     while (true) {
         var total_ram: u32 = 0;
@@ -76,17 +76,22 @@ pub fn main() anyerror!u8 {
         );
         defer allocator.free(processes);
 
-        for (processes) |proc| {
-            defer allocator.free(proc.name); // deinitializing as we dont need anymore
+        if (config.only_total) {
+            var buffer: [9]u8 = undefined;
+            try bufOut.writer().print("{s}\n", .{toHuman(&buffer, total_ram)});
+        } else {
+            for (processes) |proc| {
+                defer allocator.free(proc.name); // deinitializing as we dont need anymore
 
-            try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
+                try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
+            }
+
+            try showFooter(
+                bufOut.writer(),
+                total_ram,
+                if (config.show_swap) total_swap else null,
+            );
         }
-
-        try showFooter(
-            bufOut.writer(),
-            total_ram,
-            if (config.show_swap) total_swap else null,
-        );
 
         try bufOut.flush();
 
@@ -106,7 +111,7 @@ fn usageExit(exit_value: u8) void {
         \\-h, --help                       Show this help and exits
         \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
         \\-s, --split-args                 Show and separate by, all command line arguments (WIP)
-        \\-t, --total                      Show only the total value (WIP)
+        \\-t, --total                      Show only the total RAM memory in a human readable way
         \\-d, --discriminate-by-pid        Show by process rather than by program (WIP)
         \\-S, --swap                       Show swap information
         \\-w, --watch <N>                  Measure and show process memory every N seconds
