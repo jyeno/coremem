@@ -58,11 +58,10 @@ pub fn main() anyerror!u8 {
     var stack_alloc = std.heap.stackFallback(2048, gpa.allocator());
     var allocator = stack_alloc.get();
 
-    const config = getConfig();
-
-    // TODO verify env (geteuid)
-
-    try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
+    const config = getConfig() catch blk: {
+        usageExit(1); // if got here, then there is an invalid option
+        break :blk Config{}; // workaround to call usageExit
+    };
 
     var total_ram: u32 = 0;
     var total_swap: u32 = 0;
@@ -74,6 +73,8 @@ pub fn main() anyerror!u8 {
         config.per_pid,
     );
     defer allocator.free(processes);
+
+    try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
 
     for (processes) |proc| {
         defer allocator.free(proc.name); // deinitializing as we dont need anymore
@@ -91,8 +92,87 @@ pub fn main() anyerror!u8 {
     return 0;
 }
 
-fn getConfig() Config {
-    return .{}; // TODO parse args
+fn usageExit(exit_value: u8) void {
+    const usage_str =
+        \\Usage: coremem [OPTION]...
+        \\Show program core memory usage
+        \\-h, --help                       Show this help and exits
+        \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
+        \\-s, --split-args                 Show and separate by, all command line arguments (WIP)
+        \\-t, --total                      Show only the total value (WIP)
+        \\-d, --discriminate-by-pid        Show by process rather than by program (WIP)
+        \\-S, --swap                       Show swap information
+        \\-w, --watch <N>                  Measure and show process memory every N seconds (WIP)
+        \\-l, --limit <N>                  Show only the last N processes (WIP)
+        \\-r, --reverse                    Reverses the order that processes are shown (WIP)
+    ;
+    std.io.getStdOut().writer().print("{s}\n", .{usage_str}) catch {}; // does nothing in case of error
+    std.os.exit(exit_value);
+}
+
+/// Parse the args and returns the config
+fn getConfig() !Config {
+    var config: Config = .{};
+    var iter_args = std.process.ArgIterator.init();
+    if (iter_args.skip()) {
+        while (iter_args.nextPosix()) |arg| {
+            if (arg.len < 2 or arg[0] != '-') usageExit(1);
+            // TODO support opt=arg_opt
+            var opt_cluster = arg[1..];
+            while (opt_cluster.len > 0) : (opt_cluster = opt_cluster[1..]) {
+                switch (opt_cluster[0]) {
+                    '-' => {
+                        if (std.mem.eql(u8, "-help", opt_cluster)) {
+                            usageExit(0);
+                        } else if (std.mem.eql(u8, "-split-args", opt_cluster)) {
+                            config.split_args = true;
+                        } else if (std.mem.eql(u8, "-total", opt_cluster)) {
+                            config.only_total = true;
+                        } else if (std.mem.eql(u8, "-discriminate-by-pid", opt_cluster)) {
+                            config.per_pid = true;
+                        } else if (std.mem.eql(u8, "-swap", opt_cluster)) {
+                            config.show_swap = true;
+                        } else if (std.mem.eql(u8, "-limit", opt_cluster) or
+                            std.mem.eql(u8, "-pid", opt_cluster) or
+                            std.mem.eql(u8, "-watch", opt_cluster))
+                        {
+                            break; // options with arguments, next block
+                        } else usageExit(1);
+
+                        continue; // goes to next arg
+                    },
+                    'h' => usageExit(0),
+                    's' => config.split_args = true,
+                    't' => config.only_total = true,
+                    'd' => config.per_pid = true,
+                    'S' => config.show_swap = true,
+                    'r' => config.reverse = true,
+                    'l', 'p', 'w' => break, // options with arguments, next block
+                    else => usageExit(1),
+                }
+            } else continue;
+
+            const opt_arg = if (opt_cluster[0] != '-' and opt_cluster.len > 1) opt_cluster[1..] else iter_args.nextPosix();
+            if (opt_arg == null) usageExit(1);
+
+            switch (opt_cluster[0]) {
+                '-' => {
+                    if (std.mem.eql(u8, "-limit", opt_cluster)) {
+                        config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10);
+                    } else if (std.mem.eql(u8, "-pid", opt_cluster)) {
+                        config.pid_list = opt_arg.?;
+                    } else if (std.mem.eql(u8, "-watch", opt_cluster)) {
+                        config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10);
+                    } else unreachable;
+                },
+                'p' => config.pid_list = opt_arg.?,
+                'w' => config.watch = try std.fmt.parseInt(u8, opt_arg.?, 10),
+                'l' => config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10),
+                else => unreachable,
+            }
+        }
+    }
+    return config;
 }
 
 /// Shows the header
@@ -190,7 +270,7 @@ test "toHuman" {
 /// Creates and return a `Process`, its memory usage data is populated
 /// based on /proc smaps if exists, if not, uses /proc statm
 fn procMemoryData(allocator: std.mem.Allocator, pid: u32) !Process {
-    var buf: [128]u8 = undefined;
+    var buf: [32]u8 = undefined;
 
     var proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/cmdline", .{pid});
     var it = try readLines(allocator, proc_data_path);
