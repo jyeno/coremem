@@ -7,6 +7,7 @@ const Process = struct {
     private: u32,
     shared: u32,
     swap: u32,
+    counter: u8 = 1,
     // owned by the process
     name: []const u8,
 
@@ -19,9 +20,18 @@ const Process = struct {
         try writer.print("\t{s}", .{self.name});
         if (per_pid) {
             try writer.print(" [{}]\n", .{self.pid});
+        } else if (self.counter > 1) {
+            try writer.print(" ({})\n", .{self.counter});
         } else {
             try writer.print("\n", .{});
         }
+    }
+
+    fn mergeWith(self: *Process, other: Process) void {
+        self.private += other.private;
+        self.shared += other.shared;
+        self.swap += other.swap;
+        self.counter += 1;
     }
 
     fn cmpByTotalUsage(context: void, proc1: Process, proc2: Process) bool {
@@ -115,7 +125,7 @@ fn usageExit(exit_value: u8) void {
         \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
         \\-s, --split-args                 Show and separate by, all command line arguments (WIP)
         \\-t, --total                      Show only the total RAM memory in a human readable way
-        \\-d, --discriminate-by-pid        Show by process rather than by program (WIP)
+        \\-d, --discriminate-by-pid        Show by process rather than by program
         \\-S, --swap                       Show swap information
         \\-w, --watch <N>                  Measure and show process memory every N seconds
         \\-l, --limit <N>                  Show only the last N processes
@@ -210,7 +220,6 @@ fn getProcessesMemUsage(
     total_swap: ?*u32,
     per_pid: bool, // TODO support properly
 ) ![]Process {
-    _ = per_pid;
     var arrayProcs = std.ArrayList(Process).init(allocator);
     defer arrayProcs.deinit();
     if (pids_list) |pids| {
@@ -224,7 +233,22 @@ fn getProcessesMemUsage(
                 std.debug.print("Invalid pid '{}'\n", .{pid});
                 std.os.exit(1);
             };
-            try arrayProcs.append(proc);
+            // TODO improve to not repeat the code
+            if (per_pid) {
+                try arrayProcs.append(proc);
+            } else {
+                // iterate through existings items, if found any, then merge then together
+                var i: usize = 0;
+                while (i < arrayProcs.items.len) : (i += 1) {
+                    if (std.mem.eql(u8, proc.name, arrayProcs.items[i].name)) {
+                        allocator.free(proc.name); // liberates memory, as they are the same
+                        arrayProcs.items[i].mergeWith(proc);
+                        break;
+                    }
+                } else {
+                    try arrayProcs.append(proc); // if none found, add it to array of processes
+                }
+            }
             total_ram.* += proc.private + proc.shared;
             if (total_swap) |swap| swap.* += proc.swap;
         }
