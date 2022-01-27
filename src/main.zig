@@ -44,11 +44,14 @@ const Config = struct {
     // shows only the total amount of memory used
     only_total: bool = false,
     // means that watch is off
-    watch: u8 = 0,
+    watch: u32 = 0,
 };
 
 pub fn main() anyerror!u8 {
-    var bufOut = std.io.bufferedWriter(std.io.getStdOut().writer());
+    const config = getConfig() catch blk: {
+        usageExit(1); // if got here, then there is an invalid option
+        break :blk Config{}; // workaround to call usageExit
+    };
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -58,37 +61,41 @@ pub fn main() anyerror!u8 {
     var stack_alloc = std.heap.stackFallback(2048, gpa.allocator());
     var allocator = stack_alloc.get();
 
-    const config = getConfig() catch blk: {
-        usageExit(1); // if got here, then there is an invalid option
-        break :blk Config{}; // workaround to call usageExit
-    };
-
-    var total_ram: u32 = 0;
-    var total_swap: u32 = 0;
-    const processes = try getProcessesMemUsage(
-        allocator,
-        config.pid_list,
-        &total_ram,
-        if (config.show_swap) &total_swap else null,
-        config.per_pid,
-    );
-    defer allocator.free(processes);
-
+    var bufOut = std.io.bufferedWriter(std.io.getStdOut().writer());
     try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
 
-    for (processes) |proc| {
-        defer allocator.free(proc.name); // deinitializing as we dont need anymore
+    while (true) {
+        var total_ram: u32 = 0;
+        var total_swap: u32 = 0;
+        const processes = try getProcessesMemUsage(
+            allocator,
+            config.pid_list,
+            &total_ram,
+            if (config.show_swap) &total_swap else null,
+            config.per_pid,
+        );
+        defer allocator.free(processes);
 
-        try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
+        for (processes) |proc| {
+            defer allocator.free(proc.name); // deinitializing as we dont need anymore
+
+            try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
+        }
+
+        try showFooter(
+            bufOut.writer(),
+            total_ram,
+            if (config.show_swap) total_swap else null,
+        );
+
+        try bufOut.flush();
+
+        if (config.watch == 0) {
+            break;
+        } else {
+            std.time.sleep(config.watch * 1000000000);
+        }
     }
-
-    try showFooter(
-        bufOut.writer(),
-        total_ram,
-        if (config.show_swap) total_swap else null,
-    );
-
-    try bufOut.flush();
     return 0;
 }
 
@@ -102,7 +109,7 @@ fn usageExit(exit_value: u8) void {
         \\-t, --total                      Show only the total value (WIP)
         \\-d, --discriminate-by-pid        Show by process rather than by program (WIP)
         \\-S, --swap                       Show swap information
-        \\-w, --watch <N>                  Measure and show process memory every N seconds (WIP)
+        \\-w, --watch <N>                  Measure and show process memory every N seconds
         \\-l, --limit <N>                  Show only the last N processes (WIP)
         \\-r, --reverse                    Reverses the order that processes are shown (WIP)
     ;
@@ -166,7 +173,7 @@ fn getConfig() !Config {
                     } else unreachable;
                 },
                 'p' => config.pid_list = opt_arg.?,
-                'w' => config.watch = try std.fmt.parseInt(u8, opt_arg.?, 10),
+                'w' => config.watch = try std.fmt.parseInt(u32, opt_arg.?, 10),
                 'l' => config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10),
                 else => unreachable,
             }
@@ -188,7 +195,7 @@ fn showHeader(writer: anytype, show_swap: bool, per_pid: bool) !void {
 /// gets all the processes that the used has access of
 /// The processes are sorted in ascending order by total amount of RAM
 /// that they use
-fn getProcessesMemUsage( // TODO consider only return the processes instead of showing too
+fn getProcessesMemUsage(
     allocator: std.mem.Allocator,
     pids_list: ?[]const u8,
     total_ram: *u32,
