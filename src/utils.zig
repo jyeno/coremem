@@ -12,7 +12,7 @@ pub const Config = struct {
     reverse: bool = false,
     // 0 means that there is no limit
     limit: u32 = 0,
-    split_args: bool = false,
+    show_args: bool = false,
     // shows only the total amount of memory used
     only_total: bool = false,
     // means that watch is off
@@ -21,6 +21,34 @@ pub const Config = struct {
 
 pub fn getppid() pid_t {
     return @bitCast(pid_t, @truncate(u32, syscall0(.getppid)));
+}
+
+/// Gets the command line name (with args or not), caller must free the return
+pub fn getCmdName(allocator: std.mem.Allocator, pid: u32, show_args: bool) ![]const u8 {
+    var buf: [48]u8 = undefined;
+    return if (show_args) blk: {
+        const proc_cmd_path = try std.fmt.bufPrint(&buf, "/proc/{}/cmdline", .{pid});
+        const file_fd = try std.os.open(proc_cmd_path, std.os.O.RDONLY, 0);
+        var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
+        defer file.close();
+
+        if (try file.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 256)) |cmd_with_args| {
+            // ignores the last character
+            std.mem.replaceScalar(u8, cmd_with_args[0 .. cmd_with_args.len - 2], 0, ' ');
+            break :blk cmd_with_args;
+        } else return error.skipProc;
+    } else blk: {
+        const proc_status_path = try std.fmt.bufPrint(&buf, "/proc/{}/status", .{pid});
+        const file_fd = try std.os.open(proc_status_path, std.os.O.RDONLY, 0);
+        var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
+        defer file.close();
+        if (try file.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 256)) |cmd_name_line| {
+            defer allocator.free(cmd_name_line);
+            var iter_name = std.mem.tokenize(u8, cmd_name_line, "\t");
+            _ = iter_name.next(); // ignores "Name:...spaces..."
+            break :blk allocator.dupe(u8, iter_name.rest());
+        } else return error.skipProc;
+    };
 }
 
 /// Gets the n-th column, columns are separated by spaces
@@ -57,14 +85,12 @@ test "startsWith" {
 /// Reads a file and returns an iterator of the contents, caller is responsible
 /// of deallocating the contents read
 pub fn readLines(allocator: std.mem.Allocator, file_path: []const u8) !std.mem.SplitIterator(u8) {
-    var file_fd = try std.os.open(file_path, std.os.O.RDONLY, 0);
+    const file_fd = try std.os.open(file_path, std.os.O.RDONLY, 0);
     var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
     defer file.close();
 
     var reader = file.reader();
-
     const content = try reader.readAllAlloc(allocator, 4096);
-
     return std.mem.split(u8, content, "\n");
 }
 
@@ -102,7 +128,7 @@ pub fn usageExit(exit_value: u8) void {
         \\Show program core memory usage
         \\-h, --help                       Show this help and exits
         \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
-        \\-s, --split-args                 Show and separate by, all command line arguments (WIP)
+        \\-s, --show-args                  Show all command line arguments
         \\-t, --total                      Show only the total RAM memory in a human readable way
         \\-d, --discriminate-by-pid        Show by process rather than by program
         \\-S, --swap                       Show swap information
@@ -129,8 +155,8 @@ pub fn getConfig() !Config {
                     '-' => {
                         if (std.mem.eql(u8, "-help", opt_cluster)) {
                             usageExit(0);
-                        } else if (std.mem.eql(u8, "-split-args", opt_cluster)) {
-                            config.split_args = true;
+                        } else if (std.mem.eql(u8, "-show-args", opt_cluster)) {
+                            config.show_args = true;
                         } else if (std.mem.eql(u8, "-total", opt_cluster)) {
                             config.only_total = true;
                         } else if (std.mem.eql(u8, "-discriminate-by-pid", opt_cluster)) {
@@ -147,7 +173,7 @@ pub fn getConfig() !Config {
                         continue; // goes to next arg
                     },
                     'h' => usageExit(0),
-                    's' => config.split_args = true,
+                    's' => config.show_args = true,
                     't' => config.only_total = true,
                     'd' => config.per_pid = true,
                     'S' => config.show_swap = true,

@@ -5,12 +5,9 @@ const page_size = std.mem.page_size / 1024; // in KiB
 
 // TODO fix shared calc
 // TODO arg=opt_arg
-// TODO --split-args
-// TODO do not replicate code on --discriminate-by-pid
 // TODO consider change fileExists to only return false when the error if FileNotExists and return the other errors
 // TODO consider add -u --user to only show pids that are created by the user that has an optional arg,
 // if empty then the default is of the user
-// TODO get the parent process, and only display it on the process name
 // TODO proper message errors
 
 const Process = struct {
@@ -77,6 +74,7 @@ pub fn main() anyerror!u8 {
             &total_ram,
             if (config.show_swap) &total_swap else null,
             config.per_pid,
+            config.show_args,
         );
         defer allocator.free(processes);
 
@@ -157,6 +155,7 @@ fn getProcessesMemUsage(
     total_ram: *u32,
     total_swap: ?*u32,
     per_pid: bool,
+    show_args: bool,
 ) ![]Process {
     var array_procs = std.ArrayList(Process).init(allocator);
     defer array_procs.deinit();
@@ -165,7 +164,7 @@ fn getProcessesMemUsage(
         var iter_pids = std.mem.split(u8, pids, ",");
         while (iter_pids.next()) |pidStr| {
             const pid = try std.fmt.parseInt(u32, pidStr, 10);
-            try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid);
+            try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid, show_args);
         }
     } else {
         var proc_dir = try std.fs.cwd().openDir("/proc", .{ .access_sub_paths = false, .iterate = true });
@@ -177,7 +176,7 @@ fn getProcessesMemUsage(
                 continue;
             } // only treat process entries related to PIDs
             const pid = std.fmt.parseInt(u32, proc_entry.name, 10) catch continue;
-            try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid);
+            try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid, show_args);
         }
     }
     std.sort.sort(Process, array_procs.items, {}, Process.cmpByTotalUsage);
@@ -193,8 +192,9 @@ fn addOrMergeProcMemUsage(
     total_ram: *u32,
     total_swap: ?*u32,
     per_pid: bool,
+    show_args: bool,
 ) !void {
-    const proc = procMemoryData(allocator, pid) catch |err| switch (err) {
+    const proc = procMemoryData(allocator, pid, show_args) catch |err| switch (err) {
         error.skipProc => return,
         else => return err,
     };
@@ -218,19 +218,9 @@ fn addOrMergeProcMemUsage(
 }
 
 /// Creates and return a `Process`, its memory usage data is populated
-/// based on /proc smaps if exists, if not, uses /proc statm
-fn procMemoryData(allocator: std.mem.Allocator, pid: u32) !Process {
-    var buf: [32]u8 = undefined;
-
-    // TODO get parent process name
-    // TODO when split-args that should show the whole command line,
-    // then should use cmdline in this case, substitute \0 for space
-    var proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/comm", .{pid});
-    var iter_cmd = try utils.readLines(allocator, proc_data_path);
-
-    const cmd = iter_cmd.next() orelse return error.skipProc;
-    // const cmd_name = if (cmd.len != 0) utils.getColumn(cmd, 0).? else return error.skipProc;
-
+/// based on /proc smaps if exists, if not, uses /proc statm, also gets the cmd name
+fn procMemoryData(allocator: std.mem.Allocator, pid: u32, show_args: bool) !Process {
+    var buf: [48]u8 = undefined;
     var private: u32 = 0;
     var private_huge: u32 = 0;
     var shared: u32 = 0;
@@ -240,18 +230,17 @@ fn procMemoryData(allocator: std.mem.Allocator, pid: u32) !Process {
     var pss_adjust: f32 = 0.0;
     var swap_pss: u32 = 0;
 
-    proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/smaps_rollup", .{pid});
+    var proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/smaps_rollup", .{pid});
     if (!utils.fileExists(proc_data_path)) {
         proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/smaps", .{pid});
     }
     // if cant read smaps, then uses statm
-    var iter_smaps = utils.readLines(allocator, proc_data_path) catch null;
-    // cant use directly on the if because an iterator must be mutable
-    if (iter_smaps != null) {
-        defer allocator.free(iter_smaps.?.buffer);
+    if (utils.fileExists(proc_data_path)) {
+        var iter_smaps = try utils.readLines(allocator, proc_data_path);
+        defer allocator.free(iter_smaps.buffer);
 
-        _ = iter_smaps.?.next(); // ignore first line
-        while (iter_smaps.?.next()) |line| {
+        _ = iter_smaps.next(); // ignore first line
+        while (iter_smaps.next()) |line| {
             if (line.len == 0) continue;
             const usageValueStr = utils.getColumn(line, 1);
             const usageValue = std.fmt.parseInt(u32, usageValueStr.?, 10) catch {
@@ -295,7 +284,7 @@ fn procMemoryData(allocator: std.mem.Allocator, pid: u32) !Process {
         .shared = shared + shared_huge,
         .swap = swap,
         .pid = pid,
-        .name = cmd,
+        .name = try utils.getCmdName(allocator, pid, show_args),
     };
 }
 
