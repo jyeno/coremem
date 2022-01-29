@@ -42,10 +42,7 @@ const Process = struct {
 };
 
 pub fn main() anyerror!u8 {
-    const config = utils.getConfig() catch blk: {
-        utils.usageExit(1); // if got here, then there is an invalid option
-        break :blk utils.Config{}; // workaround to call usageExit
-    };
+    const config = utils.getConfig() catch utils.usageExit(1);
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer {
@@ -230,11 +227,11 @@ fn procMemoryData(allocator: std.mem.Allocator, pid: u32, show_args: bool) !Proc
     var swap_pss: u32 = 0;
 
     var proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/smaps_rollup", .{pid});
-    if (!utils.fileExists(proc_data_path)) {
+    if (!utils.fileExistsNotEmpty(proc_data_path)) {
         proc_data_path = try std.fmt.bufPrint(&buf, "/proc/{}/smaps", .{pid});
     }
     // if cant read smaps, then uses statm
-    if (utils.fileExists(proc_data_path)) {
+    if (utils.fileExistsNotEmpty(proc_data_path)) {
         // if cant read the contents, skip it
         var iter_smaps = utils.readLines(allocator, proc_data_path) catch return error.skipProc;
         defer allocator.free(iter_smaps.buffer);

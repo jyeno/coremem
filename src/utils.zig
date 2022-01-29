@@ -45,6 +45,7 @@ pub fn getCmdName(allocator: std.mem.Allocator, pid: u32, show_args: bool) ![]co
             break :blk cmd_with_args;
         } else return error.skipProc;
     } else blk: {
+        // TODO fix it, currently it shows the the comm version of the cmd name
         const proc_status_path = try std.fmt.bufPrint(&buf, "/proc/{}/status", .{pid});
         const file_fd = try std.os.open(proc_status_path, std.os.O.RDONLY, 0);
         var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
@@ -93,20 +94,22 @@ test "startsWith" {
 /// of deallocating the contents read
 pub fn readLines(allocator: std.mem.Allocator, file_path: []const u8) !std.mem.SplitIterator(u8) {
     const file_fd = try std.os.open(file_path, std.os.O.RDONLY, 0);
-    var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
+    var file = std.fs.File{ .handle = file_fd };
     defer file.close();
 
-    var reader = file.reader();
-    const content = try reader.readAllAlloc(allocator, 4096);
-    return std.mem.split(u8, content, "\n");
+    const file_content = try file.reader().readUntilDelimiterOrEofAlloc(allocator, 0, 4096);
+    if (file_content) |content| {
+        return std.mem.split(u8, content, "\n");
+    } else return error.invalidFile;
 }
 
-/// Checks if path is a existing file (user has to have access too)
-pub fn fileExists(path: []const u8) bool {
-    const file = std.os.open(path, std.os.O.RDONLY, 0) catch return false;
-    defer std.os.close(file);
+/// Checks if path is a existing file (user has to have access too) and its size is at least of 1
+pub fn fileExistsNotEmpty(path: []const u8) bool {
+    const file_fd = std.os.open(path, std.os.O.RDONLY, 0) catch return false;
+    defer std.os.close(file_fd);
 
-    return true;
+    const proc_stat = std.os.fstat(file_fd) catch return false;
+    return proc_stat.size > 0;
 }
 
 /// Returns a slice with a human-readable format based on `num`
