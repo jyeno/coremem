@@ -1,6 +1,4 @@
 const std = @import("std");
-const syscall0 = std.os.linux.syscall0;
-const pid_t = std.os.pid_t;
 
 pub const Config = struct {
     show_swap: bool = false,
@@ -17,10 +15,19 @@ pub const Config = struct {
     only_total: bool = false,
     // means that watch is off
     watch: u32 = 0,
+    // only show processes of the user id, null means no restriction
+    user_id: ?std.os.uid_t = null, // TODO consider having more than one uid allowed
 };
 
-pub fn getppid() pid_t {
-    return @bitCast(pid_t, @truncate(u32, syscall0(.getppid)));
+/// Gets the uid of the owner of given pid
+pub fn getPidOwner(pid: u32) !std.os.uid_t {
+    var buf: [48]u8 = undefined;
+    const proc_cmd_path = try std.fmt.bufPrint(&buf, "/proc/{}/stat", .{pid});
+    const proc_fd = try std.os.open(proc_cmd_path, std.os.O.RDONLY, 0);
+    defer std.os.close(proc_fd);
+
+    const proc_stat = try std.os.fstat(proc_fd);
+    return proc_stat.uid;
 }
 
 /// Gets the command line name (with args or not), caller must free the return
@@ -122,19 +129,20 @@ test "toHuman" {
 }
 
 /// prints the usage and then exits
-pub fn usageExit(exit_value: u8) void {
+pub fn usageExit(exit_value: u8) noreturn {
     const usage_str =
         \\Usage: coremem [OPTION]...
         \\Show program core memory usage
         \\-h, --help                       Show this help and exits
-        \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
+        \\-S, --swap                       Show swap information
         \\-s, --show-args                  Show all command line arguments
+        \\-r, --reverse                    Reverses the order that processes are shown
         \\-t, --total                      Show only the total RAM memory in a human readable way
         \\-d, --discriminate-by-pid        Show by process rather than by program
-        \\-S, --swap                       Show swap information
         \\-w, --watch <N>                  Measure and show process memory every N seconds
         \\-l, --limit <N>                  Show only the last N processes
-        \\-r, --reverse                    Reverses the order that processes are shown
+        \\-u, --user-id [uid]              Only consider the processes owned by uid (if none specified, defaults to current user)
+        \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
     ;
 
     const out = if (exit_value == 0) std.io.getStdOut() else std.io.getStdErr();
@@ -142,65 +150,83 @@ pub fn usageExit(exit_value: u8) void {
     std.os.exit(exit_value);
 }
 
+const Flag = struct {
+    long: []const u8,
+    short: u8,
+    kind: enum { no_arg, optional_arg, needs_arg } = .no_arg,
+    identifier: enum { swap, by_pid, args, total, reverse, limit, user, pid, watch, help },
+};
+
+const flags = [_]Flag{
+    .{ .identifier = .by_pid, .long = "discriminate-by-pid", .short = 'd' },
+    .{ .identifier = .help, .long = "help", .short = 'h' },
+    .{ .identifier = .args, .long = "show-args", .short = 's' },
+    .{ .identifier = .swap, .long = "swap", .short = 'S' },
+    .{ .identifier = .reverse, .long = "reverse", .short = 'r' },
+    .{ .identifier = .total, .long = "total", .short = 't' },
+    .{ .identifier = .user, .long = "user-id", .short = 'u', .kind = .optional_arg },
+    .{ .identifier = .limit, .long = "limit", .short = 'l', .kind = .needs_arg },
+    .{ .identifier = .pid, .long = "pid", .short = 'p', .kind = .needs_arg },
+    .{ .identifier = .watch, .long = "watch", .short = 'w', .kind = .needs_arg },
+};
+
 /// Parse the args and returns the config
 pub fn getConfig() !Config {
     var config: Config = .{};
     var iter_args = std.process.ArgIterator.init();
-    if (iter_args.skip()) {
-        while (iter_args.nextPosix()) |arg| {
-            if (arg.len < 2 or arg[0] != '-') usageExit(1);
-            var opt_cluster = arg[1..];
-            while (opt_cluster.len > 0) : (opt_cluster = opt_cluster[1..]) {
-                switch (opt_cluster[0]) {
-                    '-' => {
-                        if (std.mem.eql(u8, "-help", opt_cluster)) {
-                            usageExit(0);
-                        } else if (std.mem.eql(u8, "-show-args", opt_cluster)) {
-                            config.show_args = true;
-                        } else if (std.mem.eql(u8, "-total", opt_cluster)) {
-                            config.only_total = true;
-                        } else if (std.mem.eql(u8, "-discriminate-by-pid", opt_cluster)) {
-                            config.per_pid = true;
-                        } else if (std.mem.eql(u8, "-swap", opt_cluster)) {
-                            config.show_swap = true;
-                        } else if (std.mem.eql(u8, "-limit", opt_cluster) or
-                            std.mem.eql(u8, "-pid", opt_cluster) or
-                            std.mem.eql(u8, "-watch", opt_cluster))
-                        {
-                            break; // options with arguments, next block
-                        } else usageExit(1);
-
-                        continue; // goes to next arg
-                    },
-                    'h' => usageExit(0),
-                    's' => config.show_args = true,
-                    't' => config.only_total = true,
-                    'd' => config.per_pid = true,
-                    'S' => config.show_swap = true,
-                    'r' => config.reverse = true,
-                    'l', 'p', 'w' => break, // options with arguments, next block
-                    else => usageExit(1),
+    _ = iter_args.skip(); // skip cmd name
+    while (iter_args.nextPosix()) |arg| {
+        if (arg.len < 2 or arg[0] != '-') usageExit(1); // no positional args, nor only '-' allowed
+        var opt_cluster = arg[1..];
+        while (opt_cluster.len > 0) : (opt_cluster = opt_cluster[1..]) {
+            // get the index of the equals, if not then get the last index of the cluster
+            const stop_index = if (std.mem.indexOfScalar(u8, opt_cluster, '=')) |equals_index| equals_index else opt_cluster.len;
+            const flag = for (flags) |flag| {
+                if ((opt_cluster[0] == '-' and std.mem.eql(u8, opt_cluster[1..stop_index], flag.long) or
+                    opt_cluster[0] == flag.short))
+                {
+                    break flag;
                 }
-            } else continue;
+            } else usageExit(1);
 
-            const opt_arg = if (opt_cluster[0] != '-' and opt_cluster.len > 1) opt_cluster[1..] else iter_args.nextPosix();
-            if (opt_arg == null) usageExit(1);
-
-            switch (opt_cluster[0]) {
-                '-' => {
-                    if (std.mem.eql(u8, "-limit", opt_cluster)) {
-                        config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10);
-                    } else if (std.mem.eql(u8, "-pid", opt_cluster)) {
-                        config.pid_list = opt_arg.?;
-                    } else if (std.mem.eql(u8, "-watch", opt_cluster)) {
-                        config.limit = try std.fmt.parseInt(u8, opt_arg.?, 10);
-                    } else unreachable;
-                },
-                'p' => config.pid_list = opt_arg.?,
-                'w' => config.watch = try std.fmt.parseInt(u32, opt_arg.?, 10),
-                'l' => config.limit = try std.fmt.parseInt(u32, opt_arg.?, 10),
-                else => unreachable,
+            if (flag.kind == .no_arg) {
+                switch (flag.identifier) {
+                    .help => usageExit(0),
+                    .total => config.only_total = true,
+                    .args => config.show_args = true,
+                    .swap => config.show_swap = true,
+                    .by_pid => config.per_pid = true,
+                    .reverse => config.reverse = true,
+                    else => unreachable,
+                }
+                if (opt_cluster[0] == '-') break else continue;
             }
+            const opt_arg = blk: {
+                if (opt_cluster[stop_index] == '=') {
+                    // if stop_index is the last character returns null, else returns the slice after the equals
+                    break :blk if (stop_index < opt_cluster.len - 1) opt_cluster[stop_index + 1 ..] else null;
+                } else if (opt_cluster.len > 1 and opt_cluster[0] != '-') {
+                    break :blk opt_cluster[1..];
+                } else { // get the next arg or null
+                    break :blk iter_args.nextPosix();
+                }
+            };
+            // maybe change it, first see if the opt_arg is null or not, then treat it if optional or not
+            if (flag.kind == .optional_arg and (opt_arg == null or opt_arg.?[0] == '-')) {
+                config.user_id = std.os.linux.getuid();
+                if (opt_arg) |arg_value| opt_cluster = arg_value[0..]; // continues iterating based on this arg_value
+
+            } else if (opt_arg) |arg_value| {
+                switch (flag.identifier) {
+                    .user => config.user_id = try std.fmt.parseInt(std.os.uid_t, arg_value, 10),
+                    .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
+                    .watch => config.watch = try std.fmt.parseInt(u32, arg_value, 10),
+                    .pid => config.pid_list = arg_value,
+                    else => unreachable,
+                }
+            } else usageExit(1);
+
+            break;
         }
     }
     return config;

@@ -3,13 +3,6 @@ const utils = @import("utils.zig");
 
 const page_size = std.mem.page_size / 1024; // in KiB
 
-// TODO fix shared calc
-// TODO arg=opt_arg
-// TODO consider change fileExists to only return false when the error if FileNotExists and return the other errors
-// TODO consider add -u --user to only show pids that are created by the user that has an optional arg,
-// if empty then the default is of the user
-// TODO proper message errors
-
 const Process = struct {
     pid: u32,
     private: u32,
@@ -75,6 +68,7 @@ pub fn main() anyerror!u8 {
             if (config.show_swap) &total_swap else null,
             config.per_pid,
             config.show_args,
+            config.user_id,
         );
         defer allocator.free(processes);
 
@@ -156,6 +150,7 @@ fn getProcessesMemUsage(
     total_swap: ?*u32,
     per_pid: bool,
     show_args: bool,
+    user_id: ?std.os.uid_t,
 ) ![]Process {
     var array_procs = std.ArrayList(Process).init(allocator);
     defer array_procs.deinit();
@@ -164,6 +159,8 @@ fn getProcessesMemUsage(
         var iter_pids = std.mem.split(u8, pids, ",");
         while (iter_pids.next()) |pidStr| {
             const pid = try std.fmt.parseInt(u32, pidStr, 10);
+            if (user_id != null and user_id.? != try utils.getPidOwner(pid)) continue;
+
             try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid, show_args);
         }
     } else {
@@ -176,6 +173,8 @@ fn getProcessesMemUsage(
                 continue;
             } // only treat process entries related to PIDs
             const pid = std.fmt.parseInt(u32, proc_entry.name, 10) catch continue;
+            if (user_id != null and user_id.? != try utils.getPidOwner(pid)) continue;
+
             try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid, show_args);
         }
     }
@@ -236,13 +235,18 @@ fn procMemoryData(allocator: std.mem.Allocator, pid: u32, show_args: bool) !Proc
     }
     // if cant read smaps, then uses statm
     if (utils.fileExists(proc_data_path)) {
-        var iter_smaps = try utils.readLines(allocator, proc_data_path);
+        // if cant read the contents, skip it
+        var iter_smaps = utils.readLines(allocator, proc_data_path) catch return error.skipProc;
         defer allocator.free(iter_smaps.buffer);
+
+        // TODO fix shared calc
 
         _ = iter_smaps.next(); // ignore first line
         while (iter_smaps.next()) |line| {
             if (line.len == 0) continue;
             const usageValueStr = utils.getColumn(line, 1);
+            if (usageValueStr == null) continue;
+
             const usageValue = std.fmt.parseInt(u32, usageValueStr.?, 10) catch {
                 // in smaps there is some lines that references some shared objects, ignore it
                 continue;
