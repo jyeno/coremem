@@ -1,5 +1,7 @@
 const std = @import("std");
 
+// TODO consider showing the username (-n/--show-username) on process
+
 pub const Config = struct {
     show_swap: bool = false,
     // discriminate by pid
@@ -206,17 +208,24 @@ pub fn getConfig() !Config {
                     break :blk iter_args.nextPosix();
                 }
             };
-            // maybe change it, first see if the opt_arg is null or not, then treat it if optional or not
-            if (flag.kind == .optional_arg and (opt_arg == null or opt_arg.?[0] == '-')) {
-                config.user_id = std.os.linux.getuid();
-                if (opt_arg) |arg_value| opt_cluster = arg_value[0..]; // continues iterating based on this arg_value
-
-            } else if (opt_arg) |arg_value| {
+            if (opt_arg) |arg_value| {
                 switch (flag.identifier) {
-                    .user => config.user_id = try std.fmt.parseInt(std.os.uid_t, arg_value, 10),
+                    .user => {
+                        if (arg_value[0] != '-') {
+                            config.user_id = try std.fmt.parseInt(std.os.uid_t, arg_value, 10);
+                        } else {
+                            config.user_id = std.os.linux.getuid();
+                            opt_cluster = arg_value[0..]; // continues iterating based on this arg_value
+                        }
+                    },
                     .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
                     .watch => config.watch = try std.fmt.parseInt(u32, arg_value, 10),
                     .pid => config.pid_list = arg_value,
+                    else => unreachable,
+                }
+            } else if (flag.kind == .optional_arg) {
+                switch (flag.identifier) {
+                    .user => config.user_id = std.os.linux.getuid(),
                     else => unreachable,
                 }
             } else usageExit(1);
