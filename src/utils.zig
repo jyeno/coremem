@@ -33,30 +33,22 @@ pub fn getPidOwner(pid: u32) !std.os.uid_t {
 /// Gets the command line name (with args or not), caller must free the return
 pub fn getCmdName(allocator: std.mem.Allocator, pid: u32, show_args: bool) ![]const u8 {
     var buf: [48]u8 = undefined;
-    return if (show_args) blk: {
-        const proc_cmd_path = try std.fmt.bufPrint(&buf, "/proc/{}/cmdline", .{pid});
-        const file_fd = try std.os.open(proc_cmd_path, std.os.O.RDONLY, 0);
-        var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
-        defer file.close();
+    const proc_cmd_path = try std.fmt.bufPrint(&buf, "/proc/{}/cmdline", .{pid});
+    const file_fd = try std.os.open(proc_cmd_path, std.os.O.RDONLY, 0);
+    var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
+    defer file.close();
 
-        if (try file.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 256)) |cmd_with_args| {
-            // ignores the last character
-            std.mem.replaceScalar(u8, cmd_with_args[0 .. cmd_with_args.len - 2], 0, ' ');
-            break :blk cmd_with_args;
-        } else return error.skipProc;
-    } else blk: {
-        // TODO fix it, currently it shows the the comm version of the cmd name
-        const proc_status_path = try std.fmt.bufPrint(&buf, "/proc/{}/status", .{pid});
-        const file_fd = try std.os.open(proc_status_path, std.os.O.RDONLY, 0);
-        var file = std.fs.File{ .handle = file_fd, .capable_io_mode = .blocking };
-        defer file.close();
-        if (try file.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 256)) |cmd_name_line| {
-            defer allocator.free(cmd_name_line);
-            var iter_name = std.mem.tokenize(u8, cmd_name_line, "\t");
-            _ = iter_name.next(); // ignores "Name:...spaces..."
-            break :blk allocator.dupe(u8, iter_name.rest());
-        } else return error.skipProc;
-    };
+    if (try file.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 512)) |cmd| {
+        // ignores the last character
+        std.mem.replaceScalar(u8, cmd[0 .. cmd.len - 2], 0, ' ');
+        if (show_args) {
+            return cmd;
+        } else {
+            defer allocator.free(cmd);
+            if (getColumn(cmd, 0)) |cmd_name| return allocator.dupe(u8, std.fs.path.basename(cmd_name));
+        }
+    }
+    return error.skipProc;
 }
 
 /// Gets the n-th column, columns are separated by spaces
