@@ -67,7 +67,10 @@ pub fn main() anyerror!u8 {
             config.show_args,
             config.user_id,
         );
-        defer allocator.free(processes);
+        defer {
+            for (processes) |proc| allocator.free(proc.name);
+            allocator.free(processes);
+        }
 
         if (config.only_total) {
             var buffer: [9]u8 = undefined;
@@ -77,8 +80,6 @@ pub fn main() anyerror!u8 {
 
             var i: usize = if (config.limit != 0 and config.limit < processes.len) processes.len - config.limit else 0;
             for (processes[i..]) |proc| {
-                defer allocator.free(proc.name); // deinitializing as we dont need anymore
-
                 try proc.showUsage(bufOut.writer(), config.show_swap, config.per_pid);
             }
 
@@ -236,15 +237,12 @@ fn procMemoryData(allocator: std.mem.Allocator, pid: u32, show_args: bool) !Proc
         var iter_smaps = utils.readLines(allocator, proc_data_path) catch return error.skipProc;
         defer allocator.free(iter_smaps.buffer);
 
-        // TODO fix shared calc
-
         _ = iter_smaps.next(); // ignore first line
         while (iter_smaps.next()) |line| {
             if (line.len == 0) continue;
-            const usageValueStr = utils.getColumn(line, 1);
-            if (usageValueStr == null) continue;
+            const usageValueStr = utils.getColumn(line, 1) orelse continue;
 
-            const usageValue = std.fmt.parseInt(u32, usageValueStr.?, 10) catch {
+            const usageValue = std.fmt.parseInt(u32, usageValueStr, 10) catch {
                 // in smaps there is some lines that references some shared objects, ignore it
                 continue;
             };
