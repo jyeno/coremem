@@ -170,68 +170,131 @@ const flags = [_]Flag{
 /// Parse the args and returns the config
 pub fn getConfig() !Config {
     var config: Config = .{};
-    var iter_args = std.process.ArgIterator.init();
+    var iter_args = std.process.ArgIteratorPosix.init();
     _ = iter_args.skip(); // skip cmd name
-    while (iter_args.nextPosix()) |arg| {
-        if (arg.len < 2 or arg[0] != '-') usageExit(1); // no positional args, nor only '-' allowed
-        var opt_cluster = arg[1..];
-        while (opt_cluster.len > 0) : (opt_cluster = opt_cluster[1..]) {
-            // get the index of the equals, if not then get the last index of the cluster
-            const stop_index = if (std.mem.indexOfScalar(u8, opt_cluster, '=')) |equals_index| equals_index else opt_cluster.len;
-            const flag = for (flags) |flag| {
-                if ((opt_cluster[0] == '-' and std.mem.eql(u8, opt_cluster[1..stop_index], flag.long) or
-                    opt_cluster[0] == flag.short))
-                {
-                    break flag;
-                }
-            } else usageExit(1);
-
-            if (flag.kind == .no_arg) {
-                switch (flag.identifier) {
-                    .help => usageExit(0),
-                    .total => config.only_total = true,
-                    .args => config.show_args = true,
-                    .swap => config.show_swap = true,
-                    .by_pid => config.per_pid = true,
-                    .reverse => config.reverse = true,
-                    else => unreachable,
-                }
-                if (opt_cluster[0] == '-') break else continue;
-            }
-            const opt_arg = blk: {
-                if (opt_cluster[stop_index] == '=') {
-                    // if stop_index is the last character returns null, else returns the slice after the equals
-                    break :blk if (stop_index < opt_cluster.len - 1) opt_cluster[stop_index + 1 ..] else null;
-                } else if (opt_cluster.len > 1 and opt_cluster[0] != '-') {
-                    break :blk opt_cluster[1..];
-                } else { // get the next arg or null
-                    break :blk iter_args.nextPosix();
-                }
-            };
-            if (opt_arg) |arg_value| {
-                switch (flag.identifier) {
-                    .user => {
-                        if (arg_value[0] != '-') {
-                            config.user_id = try std.fmt.parseInt(std.os.uid_t, arg_value, 10);
-                        } else {
-                            config.user_id = std.os.linux.getuid();
-                            opt_cluster = arg_value[0..]; // continues iterating based on this arg_value
-                        }
-                    },
-                    .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
-                    .watch => config.watch = try std.fmt.parseInt(u32, arg_value, 10),
-                    .pid => config.pid_list = arg_value,
-                    else => unreachable,
-                }
-            } else if (flag.kind == .optional_arg) {
-                switch (flag.identifier) {
-                    .user => config.user_id = std.os.linux.getuid(),
-                    else => unreachable,
-                }
-            } else usageExit(1);
-
-            break;
-        }
+    while (iter_args.next()) |arg| {
+        // ignoring the sentinel
+        try parseArg(arg[0..], &config, &iter_args);
     }
     return config;
+}
+
+// internal, for purposes of testing
+fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
+    if (arg.len < 2 or arg[0] != '-') usageExit(1); // no positional args, nor only '-' allowed
+    var opt_cluster = arg[1..];
+    while (opt_cluster.len > 0) : (opt_cluster = opt_cluster[1..]) {
+        // get the index of the equals, if not then get the last index of the cluster
+        const stop_index = if (std.mem.indexOfScalar(u8, opt_cluster, '=')) |equals_index| equals_index else opt_cluster.len;
+        const flag = for (flags) |flag| {
+            if ((opt_cluster[0] == '-' and std.mem.eql(u8, opt_cluster[1..stop_index], flag.long) or
+                opt_cluster[0] == flag.short))
+            {
+                break flag;
+            }
+        } else usageExit(1);
+
+        if (flag.kind == .no_arg) {
+            switch (flag.identifier) {
+                .help => usageExit(0),
+                .total => config.only_total = true,
+                .args => config.show_args = true,
+                .swap => config.show_swap = true,
+                .by_pid => config.per_pid = true,
+                .reverse => config.reverse = true,
+                else => unreachable,
+            }
+            if (opt_cluster[0] == '-') break else continue;
+        }
+        const opt_arg = blk: {
+            if (stop_index != opt_cluster.len) {
+                // if stop_index is the last character returns null, else returns the slice after the equals
+                break :blk if (stop_index < opt_cluster.len - 1) opt_cluster[stop_index + 1 ..] else null;
+            } else if (opt_cluster.len > 1 and opt_cluster[0] != '-') {
+                break :blk opt_cluster[1..];
+            } else { // get the next arg or null
+                break :blk if (iterator.next()) |next_arg| next_arg[0..] else null;
+                // break :blk iterator.next();
+            }
+        };
+        if (opt_arg) |arg_value| {
+            switch (flag.identifier) {
+                .user => {
+                    if (arg_value[0] != '-') {
+                        config.user_id = try std.fmt.parseInt(std.os.uid_t, arg_value, 10);
+                    } else {
+                        config.user_id = std.os.linux.getuid();
+                        opt_cluster = arg_value[0..]; // continues iterating based on this arg_value
+                        continue;
+                    }
+                },
+                .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
+                .watch => config.watch = try std.fmt.parseInt(u32, arg_value, 10),
+                .pid => config.pid_list = arg_value,
+                else => unreachable,
+            }
+        } else if (flag.kind == .optional_arg) {
+            switch (flag.identifier) {
+                .user => config.user_id = std.os.linux.getuid(),
+                else => unreachable,
+            }
+        } else usageExit(1);
+
+        break;
+    }
+}
+
+test "getConfig" {
+    {
+        const str = "-u 1000 -ds";
+        var config = Config{};
+        var iter = std.mem.tokenize(u8, str, " ");
+        while (iter.next()) |arg| {
+            try parseArg(arg, &config, &iter);
+        }
+        try std.testing.expectEqual(config.user_id.?, 1000);
+        try std.testing.expectEqual(config.show_args, true);
+        try std.testing.expectEqual(config.per_pid, true);
+        try std.testing.expectEqual(config.show_swap, false);
+        try std.testing.expectEqual(config.pid_list, null);
+        try std.testing.expectEqual(config.reverse, false);
+        try std.testing.expectEqual(config.limit, 0);
+        try std.testing.expectEqual(config.watch, 0);
+        try std.testing.expectEqual(config.only_total, false);
+    }
+    {
+        const str = "--reverse --user-id --watch 5 --swap --limit=10";
+        var config = Config{};
+        var iter = std.mem.tokenize(u8, str, " ");
+        while (iter.next()) |arg| {
+            try parseArg(arg, &config, &iter);
+        }
+        try std.testing.expectEqual(config.user_id.?, std.os.linux.getuid()); // TODO make it more multiplatform
+        try std.testing.expectEqual(config.show_args, false);
+        try std.testing.expectEqual(config.per_pid, false);
+        try std.testing.expectEqual(config.show_swap, true);
+        try std.testing.expectEqual(config.pid_list, null);
+        try std.testing.expectEqual(config.reverse, true);
+        try std.testing.expectEqual(config.limit, 10);
+        try std.testing.expectEqual(config.watch, 5);
+        try std.testing.expectEqual(config.only_total, false);
+    }
+    {
+        const str = "-d --pid 2354,9870 -t";
+        var config = Config{};
+        var iter = std.mem.tokenize(u8, str, " ");
+        while (iter.next()) |arg| {
+            try parseArg(arg, &config, &iter);
+        }
+        try std.testing.expectEqual(config.user_id, null);
+        try std.testing.expectEqual(config.show_args, false);
+        try std.testing.expectEqual(config.per_pid, true);
+        try std.testing.expectEqual(config.show_swap, false);
+        try std.testing.expect(config.pid_list != null);
+        try std.testing.expect(std.mem.eql(u8, config.pid_list.?, "2354,9870"));
+        try std.testing.expectEqual(config.reverse, false);
+        try std.testing.expectEqual(config.limit, 0);
+        try std.testing.expectEqual(config.watch, 0);
+        try std.testing.expectEqual(config.only_total, true);
+    }
 }
