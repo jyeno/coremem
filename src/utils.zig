@@ -16,7 +16,7 @@ pub const Config = struct {
     // shows only the total amount of memory used
     only_total: bool = false,
     // means that watch is off
-    watch: u32 = 0,
+    watch: u64 = 0,
     // only show processes of the user id, null means no restriction
     user_id: ?std.os.uid_t = null, // TODO consider having more than one uid allowed
 };
@@ -229,7 +229,7 @@ fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
                     }
                 },
                 .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
-                .watch => config.watch = try std.fmt.parseInt(u32, arg_value, 10),
+                .watch => config.watch = try std.fmt.parseInt(u64, arg_value, 10),
                 .pid => config.pid_list = arg_value,
                 else => unreachable,
             }
