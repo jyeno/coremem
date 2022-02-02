@@ -14,7 +14,7 @@ pub const Config = struct {
     limit: u32 = 0,
     show_args: bool = false,
     // shows only the total amount of memory used
-    only_total: bool = false,
+    only_total: ?enum { human_readable, machine_readable } = null,
     // means that watch is off
     watch: u64 = 0,
     // only show processes of the user id, null means no restriction
@@ -134,12 +134,14 @@ pub fn usageExit(exit_value: u8) noreturn {
         \\-S, --swap                       Show swap information
         \\-s, --show-args                  Show all command line arguments
         \\-r, --reverse                    Reverses the order that processes are shown
-        \\-t, --total                      Show only the total RAM memory in a human readable way
+        \\-t, --total [machine|human]      Only show the total RAM usage, by default
+        \\                                 displays the kilobytes (machine readable)
         \\-d, --discriminate-by-pid        Show by process rather than by program
-        \\-w, --watch <N>                  Measure and show process memory every N seconds
+        \\-w, --watch <N>                  Measure and show memory usage every N seconds
         \\-l, --limit <N>                  Show only the last N processes
-        \\-u, --user-id [uid]              Only consider the processes owned by uid (if none specified, defaults to current user)
-        \\-p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
+        \\-u, --user-id [uid]              Only consider the processes owned by uid, if
+        \\                                 none specified, defaults to current user
+        \\-p, --pid <pid>[,pid2,...pidN]   Shows the memory usage of the PIDs specified
     ;
 
     const out = if (exit_value == 0) std.io.getStdOut() else std.io.getStdErr();
@@ -160,7 +162,7 @@ const flags = [_]Flag{
     .{ .identifier = .args, .long = "show-args", .short = 's' },
     .{ .identifier = .swap, .long = "swap", .short = 'S' },
     .{ .identifier = .reverse, .long = "reverse", .short = 'r' },
-    .{ .identifier = .total, .long = "total", .short = 't' },
+    .{ .identifier = .total, .long = "total", .short = 't', .kind = .optional_arg },
     .{ .identifier = .user, .long = "user-id", .short = 'u', .kind = .optional_arg },
     .{ .identifier = .limit, .long = "limit", .short = 'l', .kind = .needs_arg },
     .{ .identifier = .pid, .long = "pid", .short = 'p', .kind = .needs_arg },
@@ -192,12 +194,11 @@ fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
             {
                 break flag;
             }
-        } else usageExit(1);
+        } else return error.InvalidFlag;
 
         if (flag.kind == .no_arg) {
             switch (flag.identifier) {
                 .help => usageExit(0),
-                .total => config.only_total = true,
                 .args => config.show_args = true,
                 .swap => config.show_swap = true,
                 .by_pid => config.per_pid = true,
@@ -214,7 +215,6 @@ fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
                 break :blk opt_cluster[1..];
             } else { // get the next arg or null
                 break :blk if (iterator.next()) |next_arg| next_arg[0..] else null;
-                // break :blk iterator.next();
             }
         };
         if (opt_arg) |arg_value| {
@@ -231,14 +231,28 @@ fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
                 .limit => config.limit = try std.fmt.parseInt(u32, arg_value, 10),
                 .watch => config.watch = try std.fmt.parseInt(u64, arg_value, 10),
                 .pid => config.pid_list = arg_value,
+                .total => {
+                    if (arg_value[0] != '-') {
+                        if (std.mem.eql(u8, arg_value, "machine")) {
+                            config.only_total = .machine_readable;
+                        } else if (std.mem.eql(u8, arg_value, "human")) {
+                            config.only_total = .human_readable;
+                        } else return error.InvalidOptArg;
+                    } else {
+                        config.only_total = .machine_readable;
+                        opt_cluster = arg_value[0..];
+                        continue;
+                    }
+                },
                 else => unreachable,
             }
         } else if (flag.kind == .optional_arg) {
             switch (flag.identifier) {
                 .user => config.user_id = std.os.linux.getuid(),
+                .total => config.only_total = .machine_readable,
                 else => unreachable,
             }
-        } else usageExit(1);
+        } else return error.MissingOptArg;
 
         break;
     }
@@ -246,7 +260,7 @@ fn parseArg(arg: []const u8, config: *Config, iterator: anytype) !void {
 
 test "getConfig" {
     {
-        const str = "-u 1000 -ds";
+        const str = "-u 1000 -t -ds";
         var config = Config{};
         var iter = std.mem.tokenize(u8, str, " ");
         while (iter.next()) |arg| {
@@ -260,7 +274,7 @@ test "getConfig" {
         try std.testing.expectEqual(config.reverse, false);
         try std.testing.expectEqual(config.limit, 0);
         try std.testing.expectEqual(config.watch, 0);
-        try std.testing.expectEqual(config.only_total, false);
+        try std.testing.expectEqual(config.only_total.?, .machine_readable);
     }
     {
         const str = "--reverse --user-id --watch 5 --swap --limit=10";
@@ -277,10 +291,10 @@ test "getConfig" {
         try std.testing.expectEqual(config.reverse, true);
         try std.testing.expectEqual(config.limit, 10);
         try std.testing.expectEqual(config.watch, 5);
-        try std.testing.expectEqual(config.only_total, false);
+        try std.testing.expectEqual(config.only_total, null);
     }
     {
-        const str = "-d --pid 2354,9870 -t";
+        const str = "-d --pid 2354,9870 --total=human";
         var config = Config{};
         var iter = std.mem.tokenize(u8, str, " ");
         while (iter.next()) |arg| {
@@ -295,6 +309,6 @@ test "getConfig" {
         try std.testing.expectEqual(config.reverse, false);
         try std.testing.expectEqual(config.limit, 0);
         try std.testing.expectEqual(config.watch, 0);
-        try std.testing.expectEqual(config.only_total, true);
+        try std.testing.expectEqual(config.only_total.?, .human_readable);
     }
 }

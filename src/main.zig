@@ -53,7 +53,7 @@ pub fn main() anyerror!u8 {
     var allocator = stack_alloc.get();
 
     var bufOut = std.io.bufferedWriter(std.io.getStdOut().writer());
-    if (!config.only_total) try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
+    if (config.only_total == null) try showHeader(bufOut.writer(), config.show_swap, config.per_pid);
 
     while (true) {
         var total_ram: u32 = 0;
@@ -72,9 +72,12 @@ pub fn main() anyerror!u8 {
             allocator.free(processes);
         }
 
-        if (config.only_total) {
-            var buffer: [9]u8 = undefined;
-            try bufOut.writer().print("{s}\n", .{utils.toHuman(&buffer, total_ram)});
+        if (config.only_total) |display_format| switch (display_format) {
+            .machine_readable => try bufOut.writer().print("{}\n", .{total_ram}),
+            .human_readable => {
+                var buffer: [9]u8 = undefined;
+                try bufOut.writer().print("{s}\n", .{utils.toHuman(&buffer, total_ram)});
+            },
         } else {
             if (config.reverse) std.mem.reverse(Process, processes);
 

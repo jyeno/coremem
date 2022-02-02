@@ -7,10 +7,11 @@ It is a [`ps_mem`](https://github.com/pixelb/ps_mem) alternative, this project i
 There are some aditional/changed options:
 
 ```
-* -u/--user-id [uid]        Only query processes of given uid, if none are provided, defaults to the current user
-* -l/--limit <Number>       Only show up to Number of lines
-* -r/--reverse              Reverse the order, showing processes in an descending 
-* -t/--total                Shows the total memory usage in a human readable format
+* -u/--user-id [uid]          Only query processes of given uid, if none are provided, defaults to the current user
+* -l/--limit <Number>         Only show up to Number of lines
+* -r/--reverse                Reverse the order, showing processes in an descending
+-t, --total [machine|human]   Only show the total RAM usage, by default
+                              displays the kilobytes (machine readable)
 ```
 
 
@@ -35,24 +36,26 @@ Show program core memory usage
 -S, --swap                       Show swap information
 -s, --show-args                  Show all command line arguments
 -r, --reverse                    Reverses the order that processes are shown
--t, --total                      Show only the total RAM memory in a human readable way
+-t, --total [machine|human]      Only show the total RAM usage, by default
+                                 displays the kilobytes (machine readable)
 -d, --discriminate-by-pid        Show by process rather than by program
--w, --watch <N>                  Measure and show process memory every N seconds
+-w, --watch <N>                  Measure and show memory usage every N seconds
 -l, --limit <N>                  Show only the last N processes
--u, --user-id [uid]              Only consider the processes owned by uid (if none specified, defaults to current user)
--p, --pid <pid>[,pid2,...pidN]   Only shows the memory usage of the PIDs specified
-````
+-u, --user-id [uid]              Only consider the processes owned by uid, if
+                                 none specified, defaults to current user
+-p, --pid <pid>[,pid2,...pidN]   Shows the memory usage of the PIDs specified
+```
 
 ### Examples:
 
 See the top 5 processes/programs that uses the most memory:
 
     coremem -l 5
-    
+
 See the memory usage of processes of your current user separated by its PID:
 
     coremem -du
-    
+
 Watch (with 10s of delay) the memory usage of the PIDs 2364, 9870 and 3460, also showing theirs args and swap usage:
 
     coremem -sS --watch 10 -p=2364,9870,3460
@@ -61,6 +64,5 @@ Watch (with 10s of delay) the memory usage of the PIDs 2364, 9870 and 3460, also
 ## TODOs
 
 * Properly calculate the memory usage
-* Make --total compatible with the ps_mem one, making it have an optional parameter in case you want to output in a human readable format
 * `-f/--format=[auto, Kib, Mib, Gib, Tib]`   with auto being the default, meaning that it will use any of the other formats as needed
 * Support others SOs (right now only linux is supported
