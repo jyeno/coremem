@@ -159,7 +159,7 @@ fn getProcessesMemUsage(
     if (pids_list) |pids| {
         var iter_pids = std.mem.split(u8, pids, ",");
         while (iter_pids.next()) |pidStr| {
-            const pid = try std.fmt.parseInt(u32, pidStr, 10);
+            const pid = std.fmt.parseInt(u32, pidStr, 10) catch utils.usageExit(1); // dont allow invalid pids
             if (user_id != null and user_id.? != try utils.getPidOwner(pid)) continue;
 
             try addOrMergeProcMemUsage(allocator, &array_procs, pid, total_ram, total_swap, per_pid, show_args);
